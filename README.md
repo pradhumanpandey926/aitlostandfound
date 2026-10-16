@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # AIT Lost & Found // Cinema 3D Coverflow Experience
 ### Army Institute of Technology, Pune (Estd. 1994)
 **Design System: Lazarev Agency — Cinematic Streaming & 3D Coverflow UI (Ref: [Pinterest](https://pin.it/2StigAvv5))**
@@ -114,3 +115,6 @@ cd client
 npm run dev
 ```
 Open **`http://localhost:5173`** in your browser.
+=======
+# aitlostandfound
+>>>>>>> 5a045ad29ea3ab7fb690cfeb82f0b3a2daf5a619

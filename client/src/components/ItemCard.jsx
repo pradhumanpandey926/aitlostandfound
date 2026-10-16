@@ -1,17 +1,20 @@
 import React from 'react';
-import { MapPin, ArrowRight, Award, Eye } from 'lucide-react';
+import { MapPin, ArrowRight, Award, Eye, Flag } from 'lucide-react';
 import ItemVisual from './ItemVisual';
 
 export default function ItemCard({
   item,
   onOpenDetail,
   onOpenClaim,
-  onOpenGatePass
+  onOpenGatePass,
+  onFlagItem,
+  currentUser
 }) {
   const isFound = item.type === 'found';
-  const isClaimed = item.status.toLowerCase() === 'claimed';
-  const isUnderReview = item.status.toLowerCase() === 'under review';
-  const isVerified = item.status.toLowerCase() === 'verified';
+  const isClaimed = item.status?.toLowerCase() === 'claimed';
+  const isUnderReview = item.status?.toLowerCase() === 'under review';
+  const isSpam = item.isSpamHidden || (item.flagsCount && item.flagsCount >= 3);
+  const isFlaggedByMe = currentUser && Array.isArray(item.flaggedBy) && item.flaggedBy.includes(currentUser.email?.toLowerCase());
 
   return (
     <article className="cinema-card flex flex-col justify-between group">
@@ -31,12 +34,14 @@ export default function ItemCard({
           <div className="absolute inset-0 bg-gradient-to-t from-[#141419] via-[#141419]/50 to-transparent"></div>
         </div>
 
-        {/* Top Badges (Platform Circular Pill) */}
-        <div className="absolute top-3 left-3 z-10">
+        {/* Top Badges (Platform Circular Pill + Spam Flag action) */}
+        <div className="absolute top-3 left-3 right-3 z-10 flex items-center justify-between">
           
           {/* Platform Circular Badge (HBO blue / Netflix red style) */}
           <div className={`platform-badge ${
-            isClaimed 
+            isSpam
+              ? 'platform-badge-amber'
+              : isClaimed 
               ? 'platform-badge-amber' 
               : isUnderReview 
               ? 'platform-badge-amber'
@@ -45,9 +50,32 @@ export default function ItemCard({
               : 'platform-badge-red'
           }`}>
             <span className="text-[10px] font-bold">
-              {isClaimed ? 'PASS' : isUnderReview ? 'AUDIT' : isFound ? 'FOUND' : 'LOST'}
+              {isSpam ? 'FLAGGED' : isClaimed ? 'PASS' : isUnderReview ? 'AUDIT' : isFound ? 'FOUND' : 'LOST'}
             </span>
           </div>
+
+          {/* Quick Flag as Spam Button */}
+          {onFlagItem && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onFlagItem(item);
+              }}
+              title={isFlaggedByMe ? "You flagged this post" : "Report as Spam / Inappropriate"}
+              className={`p-1.5 rounded-full backdrop-blur-md border transition-all text-xs flex items-center gap-1 ${
+                isFlaggedByMe
+                  ? 'bg-red-600/80 border-red-500 text-white shadow-lg shadow-red-900/50'
+                  : item.flagsCount > 0
+                  ? 'bg-amber-950/70 border-amber-500/50 text-amber-300 hover:bg-red-600 hover:text-white'
+                  : 'bg-black/60 border-white/15 text-white/50 hover:text-red-400 hover:border-red-500/50'
+              }`}
+            >
+              <Flag className="w-3.5 h-3.5" />
+              {item.flagsCount > 0 && (
+                <span className="text-[10px] font-mono font-bold pr-0.5">{item.flagsCount}</span>
+              )}
+            </button>
+          )}
 
         </div>
 
@@ -82,9 +110,15 @@ export default function ItemCard({
             {item.description}
           </p>
 
+          {/* Reporter accountability note */}
+          <div className="mt-2 text-[10px] text-gray-500 truncate flex items-center gap-1">
+            <span>By: {item.reporterName}</span>
+            {item.reporterRegId && <span>({item.reporterRegId})</span>}
+          </div>
+
           {/* Anti-Fraud Prompt Pill */}
           {item.verificationQuestion && (
-            <div className="mt-3.5 p-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-[11px] text-gray-300">
+            <div className="mt-3 p-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-[11px] text-gray-300">
               <span className="text-[#E50914] font-semibold block text-[10px] uppercase">
                 Verification Required:
               </span>

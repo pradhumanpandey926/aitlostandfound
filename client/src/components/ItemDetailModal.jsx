@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, MapPin, Calendar, Clock, ArrowRight, Award, Shield } from 'lucide-react';
+import { X, MapPin, Calendar, Clock, ArrowRight, Award, Shield, Flag, AlertTriangle } from 'lucide-react';
 import ItemVisual from './ItemVisual';
 
 export default function ItemDetailModal({
@@ -8,14 +8,17 @@ export default function ItemDetailModal({
   item,
   onOpenClaim,
   onOpenGatePass,
+  onFlagItem,
   currentUser
 }) {
   if (!isOpen || !item) return null;
 
   const isFound = item.type === 'found';
-  const isClaimed = item.status.toLowerCase() === 'claimed';
-  const isUnderReview = item.status.toLowerCase() === 'under review';
+  const isClaimed = item.status?.toLowerCase() === 'claimed';
+  const isUnderReview = item.status?.toLowerCase() === 'under review';
+  const isSpam = item.isSpamHidden || (item.flagsCount && item.flagsCount >= 3);
   const isAdmin = currentUser?.role === 'Staff / Other / Security' || currentUser?.role === 'Security Desk / Admin';
+  const isFlaggedByMe = currentUser && Array.isArray(item.flaggedBy) && item.flaggedBy.includes(currentUser.email?.toLowerCase());
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md overflow-y-auto">
@@ -47,6 +50,36 @@ export default function ItemDetailModal({
         {/* Content Body */}
         <div className="p-5 sm:p-8 overflow-y-auto space-y-6">
           
+          {/* Spam / Quarantine Alert banner if flagged */}
+          {item.flagsCount > 0 && (
+            <div className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
+              isSpam 
+                ? 'bg-red-950/40 border-red-500/50 text-red-200' 
+                : 'bg-amber-950/30 border-amber-500/40 text-amber-200'
+            }`}>
+              <div className="flex items-center gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+                <div className="text-xs">
+                  <span className="font-bold block">
+                    {isSpam ? '🚨 QUARANTINED UNDER SPAM POLICY' : 'Post Flagged by Campus Members'}
+                  </span>
+                  <span>
+                    Received {item.flagsCount} / 3 community flag(s). 
+                    {isSpam ? ' This item is currently hidden from the public feed pending Security Desk audit.' : ' Will auto-hide upon 3 flags.'}
+                  </span>
+                </div>
+              </div>
+              {onFlagItem && !isFlaggedByMe && !isSpam && (
+                <button
+                  onClick={() => onFlagItem(item)}
+                  className="px-3 py-1.5 rounded-xl bg-red-600/30 border border-red-500/50 hover:bg-red-600 text-white text-xs font-semibold shrink-0"
+                >
+                  Flag Post
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Top Visual Graphic with Reference Badges */}
           <div className="relative rounded-2xl overflow-hidden">
             <ItemVisual
@@ -139,7 +172,7 @@ export default function ItemDetailModal({
           {/* Detailed Narrative */}
           <div>
             <span className="text-xs font-bold uppercase tracking-wider text-white/60 block mb-2">
-              Incident Narrative
+              Incident Narrative (Minimum 25 Chars Required)
             </span>
             <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-sm text-white/80 leading-relaxed">
               {item.description}
@@ -169,15 +202,15 @@ export default function ItemDetailModal({
             )}
           </div>
 
-          {/* Reporter & Custody chain */}
+          {/* Reporter & Custody chain (Accountability Bound) */}
           <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 text-xs flex flex-col sm:flex-row justify-between sm:items-center gap-2">
             <div className="text-white/70">
-              <span>Logged by: </span>
+              <span>Account Bound: </span>
               <strong className="text-white">{item.reporterName}</strong>
-              <span className="text-white/40"> ({item.reporterRole} • {item.reporterEmail})</span>
+              <span className="text-white/50"> ({item.reporterRole} • {item.reporterEmail} • Reg: {item.reporterRegId || 'N/A'})</span>
             </div>
-            <span className="text-[10px] text-white/60 bg-white/10 px-2.5 py-0.5 rounded-full self-start sm:self-auto">
-              Campus Affiliated
+            <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full self-start sm:self-auto font-medium">
+              Verified @aitpune.edu.in
             </span>
           </div>
 
@@ -203,13 +236,30 @@ export default function ItemDetailModal({
         </div>
 
         {/* Modal Footer Actions */}
-        <div className="p-4 sm:p-5 border-t border-white/10 bg-[#0a0b0e] flex items-center justify-between shrink-0 text-xs">
-          <button
-            onClick={onClose}
-            className="px-5 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors"
-          >
-            Dismiss Dossier
-          </button>
+        <div className="p-4 sm:p-5 border-t border-white/10 bg-[#0a0b0e] flex items-center justify-between shrink-0 text-xs gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors"
+            >
+              Dismiss
+            </button>
+
+            {/* Spam Flag Button */}
+            {onFlagItem && (
+              <button
+                onClick={() => onFlagItem(item)}
+                className={`px-3.5 py-2.5 rounded-full border flex items-center gap-1.5 font-semibold transition-all ${
+                  isFlaggedByMe
+                    ? 'bg-red-600/30 border-red-500 text-red-200'
+                    : 'bg-white/5 border-white/10 text-gray-400 hover:text-red-400 hover:border-red-500/40'
+                }`}
+              >
+                <Flag className="w-3.5 h-3.5" />
+                <span>{isFlaggedByMe ? 'Flagged as Spam' : 'Report Spam'}</span>
+              </button>
+            )}
+          </div>
 
           {isClaimed ? (
             <button

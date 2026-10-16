@@ -1,0 +1,87 @@
+# ==========================================
+# AIT Lost & Found — Root .gitignore
+# ==========================================
+
+# Dependencies (Node.js & Package Managers)
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.pnpm-store/
+
+# Production Build Outputs
+dist/
+dist-ssr/
+build/
+client/dist/
+*.tsbuildinfo
+
+# Environment & Sensitive Credentials
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+*.env.*
+!*.env.example
+
+# Runtime & Debug Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Diagnostic & Coverage Reports
+coverage/
+.nyc_output/
+*.lcov
+
+# Temporary, Cache & Build Tool Artifacts
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.stylelintcache
+*.tmp
+*.temp
+
+# IDEs & Code Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swo
+*.swn
+.sublime-project
+.sublime-workspace
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+
+# AI / IDE Agent Storage (Antigravity & Gemini IDE)
+.gemini/
+.agents/
+scratch/

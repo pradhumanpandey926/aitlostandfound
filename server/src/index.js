@@ -1,54 +1,27 @@
 import express from 'express';
 import cors from 'cors';
-import { AIT_LOCATIONS, CATEGORIES, SEEDED_ITEMS, INITIAL_ALERTS } from './data.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { AIT_LOCATIONS, CATEGORIES } from './data.js';
+import {
+  initStore,
+  connectMongo,
+  itemStore,
+  claimStore,
+  notificationStore,
+  alertStore,
+  userStore
+} from './services/dbStore.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
 
-// In-Memory Database initialized with seed data
-let items = JSON.parse(JSON.stringify(SEEDED_ITEMS));
-let claims = [
-  {
-    id: "claim-001",
-    itemId: "item-008",
-    itemRefCode: "AIT-2026-F008",
-    itemTitle: "AIT Official Squad Blazer (Navy Blue / Brass Crest)",
-    claimantName: "Devansh Singh",
-    claimantEmail: "devansh.singh_2310@aitpune.edu.in",
-    claimantRoll: "23102",
-    claimantPhone: "+91 98230 44521",
-    answers: "Tailor tag says Raymond Tailors Pune with serial 749, has extra brass button in right pocket.",
-    additionalProof: "I was wearing it for the NCC drill on Monday and left it on row F.",
-    status: "Pending", // Pending, Approved, Rejected
-    submittedAt: "2026-10-14T10:30:00Z"
-  }
-];
-
-let alerts = JSON.parse(JSON.stringify(INITIAL_ALERTS));
-let notifications = [
-  {
-    id: "notif-001",
-    type: "system",
-    title: "System Initialized",
-    message: "AIT Campus Recovery Portal is live with official landmarks & anti-fraud verification.",
-    timestamp: new Date().toISOString(),
-    read: false,
-    refCode: "AIT-SYSTEM"
-  },
-  {
-    id: "notif-002",
-    type: "claim_pending",
-    title: "New Claim Received",
-    message: "Claim submitted for 'AIT Official Squad Blazer (Navy Blue)' by Devansh Singh (23102).",
-    timestamp: "2026-10-14T10:31:00Z",
-    read: false,
-    itemId: "item-008",
-    refCode: "AIT-2026-F008"
-  }
-];
+// Initialize persistent storage and attempt MongoDB connection
+initStore();
+connectMongo();
 
 // Helper: Generate Ref Code
 function generateRefCode(type) {
@@ -57,52 +30,6 @@ function generateRefCode(type) {
   const randomNum = Math.floor(100 + Math.random() * 900);
   return `AIT-${year}-${prefix}${randomNum}`;
 }
-
-// ---------------- API ROUTES ----------------
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'AIT Lost & Found API', version: '1.0.0' });
-});
-
-// Metadata: Locations & Categories
-app.get('/api/meta', (req, res) => {
-  res.json({
-    locations: AIT_LOCATIONS,
-    categories: CATEGORIES
-  });
-});
-
-// In-Memory Users Registry
-let users = [
-  {
-    id: "user-001",
-    name: "Priya Sharma",
-    email: "priya.sharma_2311@aitpune.edu.in",
-    role: "Student",
-    regId: "23112",
-    dept: "TE Computer Engineering",
-    password: "password123"
-  },
-  {
-    id: "user-002",
-    name: "Dr. S. K. Kulkarni",
-    email: "sk.kulkarni@aitpune.edu.in",
-    role: "Faculty / Teacher",
-    regId: "FAC-041",
-    dept: "Mechanical Engineering Dept",
-    password: "password123"
-  },
-  {
-    id: "user-003",
-    name: "Havaldar R. K. Singh",
-    email: "security.desk@aitpune.edu.in",
-    role: "Staff / Other / Security",
-    regId: "SEC-882",
-    dept: "Main Security & Guard Post",
-    password: "password123"
-  }
-];
 
 // Helper: Normalize role
 function normalizeRole(role) {
@@ -113,11 +40,42 @@ function normalizeRole(role) {
   return 'Student';
 }
 
+// Rate Limiter tracking (in-memory sliding window map)
+// Key: email or IP -> Array of timestamps
+const reportRateLimits = new Map();
+
+function checkReportRateLimit(identifier) {
+  const now = Date.now();
+  const ONE_HOUR = 60 * 60 * 1000;
+  const history = reportRateLimits.get(identifier) || [];
+  
+  // Keep only timestamps within the last 1 hour
+  const recentReports = history.filter(ts => now - ts < ONE_HOUR);
+  
+  if (recentReports.length >= 3) {
+    const oldest = recentReports[0];
+    const minutesLeft = Math.ceil((ONE_HOUR - (now - oldest)) / (60 * 1000));
+    return {
+      allowed: false,
+      minutesLeft
+    };
+  }
+
+  recentReports.push(now);
+  reportRateLimits.set(identifier, recentReports);
+  return { allowed: true };
+}
+
 // ---------------- API ROUTES ----------------
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'AIT Lost & Found API', version: '1.0.0' });
+  res.json({ 
+    status: 'ok', 
+    service: 'AIT Lost & Found API', 
+    version: '2.0.0',
+    persistence: 'MongoDB + Persistent Disk Sync'
+  });
 });
 
 // Metadata: Locations & Categories
@@ -128,7 +86,9 @@ app.get('/api/meta', (req, res) => {
   });
 });
 
-// Authentication: Register New User
+// ---------------- AUTHENTICATION ----------------
+
+// Register New User
 app.post('/api/auth/register', (req, res) => {
   const { name, email, role, regId, password } = req.body;
 
@@ -139,43 +99,22 @@ app.post('/api/auth/register', (req, res) => {
   const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail.endsWith('@aitpune.edu.in')) {
     return res.status(400).json({ 
-      error: 'Please use your official college email (e.g., name_id@aitpune.edu.in)' 
+      error: 'Access restricted: Only official @aitpune.edu.in college email IDs are authorized.' 
     });
-  }
-
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Password must be at least 4 characters long.' });
   }
 
   if (!regId || !regId.trim()) {
     return res.status(400).json({ error: 'Registration Number / Student ID / Employee ID is required.' });
   }
 
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Password must be at least 4 characters long.' });
+  }
+
   const userRole = normalizeRole(role);
   const userName = name?.trim() || cleanEmail.split('@')[0].replace(/[._\d]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).trim();
 
-  // Check if user already exists
-  const existingUser = users.find(u => u.email === cleanEmail);
-  if (existingUser) {
-    existingUser.name = userName;
-    existingUser.role = userRole;
-    existingUser.regId = regId.trim();
-    existingUser.password = password;
-    return res.json({
-      message: 'Account updated successfully.',
-      user: {
-        id: existingUser.id,
-        name: existingUser.name,
-        email: existingUser.email,
-        role: existingUser.role,
-        regId: existingUser.regId,
-        dept: existingUser.dept || 'Army Institute of Technology'
-      },
-      token: `ait-auth-${Date.now()}`
-    });
-  }
-
-  const newUser = {
+  const user = userStore.createOrUpdate({
     id: `user-${Date.now()}`,
     name: userName,
     email: cleanEmail,
@@ -183,25 +122,23 @@ app.post('/api/auth/register', (req, res) => {
     regId: regId.trim(),
     dept: userRole === 'Staff / Other / Security' ? 'Security & Administration' : userRole === 'Faculty / Teacher' ? 'Academic Faculty' : 'Undergraduate Student',
     password
-  };
-
-  users.push(newUser);
+  });
 
   res.status(201).json({
     message: 'Registration successful! Welcome to AIT Lost & Found.',
     user: {
-      id: newUser.id,
-      name: newUser.name,
-      email: newUser.email,
-      role: newUser.role,
-      regId: newUser.regId,
-      dept: newUser.dept
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      regId: user.regId,
+      dept: user.dept
     },
     token: `ait-auth-${Date.now()}`
   });
 });
 
-// Authentication: Login User
+// Login User
 app.post('/api/auth/login', (req, res) => {
   const { email, password, role, regId } = req.body;
 
@@ -212,7 +149,7 @@ app.post('/api/auth/login', (req, res) => {
   const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail.endsWith('@aitpune.edu.in')) {
     return res.status(400).json({ 
-      error: 'Please use your official college email (e.g., name_id@aitpune.edu.in)' 
+      error: 'Access restricted: Only official @aitpune.edu.in college email IDs are authorized.' 
     });
   }
 
@@ -220,22 +157,20 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(400).json({ error: 'Password is required.' });
   }
 
-  // Look for existing user
-  let user = users.find(u => u.email === cleanEmail);
+  let user = userStore.findByEmail(cleanEmail);
 
   if (!user) {
     const userRole = normalizeRole(role);
     const userName = cleanEmail.split('@')[0].replace(/[._\d]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).trim() || 'AIT Member';
-    user = {
+    user = userStore.createOrUpdate({
       id: `user-${Date.now()}`,
       name: userName,
       email: cleanEmail,
       role: userRole,
-      regId: regId?.trim() || cleanEmail.split('@')[0].split('_')[1] || '2026',
+      regId: regId?.trim() || cleanEmail.split('@')[0].split('_')[1] || '23112',
       dept: userRole === 'Staff / Other / Security' ? 'Main Security Post' : 'Army Institute of Technology',
       password
-    };
-    users.push(user);
+    });
   }
 
   res.json({
@@ -252,263 +187,507 @@ app.post('/api/auth/login', (req, res) => {
   });
 });
 
-// Authentication: Logout
+// Logout
 app.post('/api/auth/logout', (req, res) => {
   res.json({ message: 'Logged out successfully.' });
 });
 
-// Legacy Email Verification Compatibility Route
+// Legacy Verification
 app.post('/api/auth/verify-email', (req, res) => {
   const { email, rolePreference, regId } = req.body;
-
-  if (!email || !email.includes('@')) {
-    return res.status(400).json({ error: 'Valid email address is required.' });
+  if (!email || !email.trim().toLowerCase().endsWith('@aitpune.edu.in')) {
+    return res.status(400).json({ error: 'Please use your official @aitpune.edu.in email ID.' });
   }
-
   const cleanEmail = email.trim().toLowerCase();
-  if (!cleanEmail.endsWith('@aitpune.edu.in')) {
-    return res.status(400).json({ 
-      error: 'Please use your official college email (e.g., name_id@aitpune.edu.in)' 
-    });
-  }
-
-  const userRole = normalizeRole(rolePreference);
-  const username = cleanEmail.split('@')[0];
-
-  const userProfile = {
+  const user = userStore.findByEmail(cleanEmail) || userStore.createOrUpdate({
+    id: `user-${Date.now()}`,
+    name: cleanEmail.split('@')[0].replace(/[._\d]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).trim(),
     email: cleanEmail,
-    name: username.replace(/[._\d]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()).trim() || 'AIT Member',
-    role: userRole,
-    regId: regId || username.split('_')[1] || '23112',
-    verified: true,
-    department: 'Army Institute of Technology, Pune',
-    avatarLetter: username.charAt(0).toUpperCase()
-  };
+    role: normalizeRole(rolePreference),
+    regId: regId || cleanEmail.split('@')[0].split('_')[1] || '23112',
+    dept: 'Army Institute of Technology, Pune'
+  });
 
   res.json({
     message: 'College credentials verified successfully.',
-    user: userProfile,
+    user,
     token: `ait-auth-${Date.now()}`
   });
 });
 
+// ---------------- ITEMS ENDPOINTS ----------------
+
 // Get Items with Query Filters
-app.get('/api/items', (req, res) => {
-  const { search, category, location, type, status, urgency } = req.query;
+app.get('/api/items', async (req, res) => {
+  try {
+    const { search, category, location, type, status, urgency, includeSpamHidden } = req.query;
 
-  let results = [...items];
+    // By default, hide spam quarantined items unless specifically requested (e.g. by Admin console)
+    const items = await itemStore.getAll({ 
+      includeSpamHidden: includeSpamHidden === 'true' 
+    });
 
-  if (type && type !== 'all') {
-    results = results.filter(item => item.type.toLowerCase() === type.toLowerCase());
+    let results = [...items];
+
+    if (type && type !== 'all') {
+      results = results.filter(item => item.type && item.type.toLowerCase() === type.toLowerCase());
+    }
+
+    if (category && category !== 'all') {
+      results = results.filter(item => item.category === category);
+    }
+
+    if (location && location !== 'all') {
+      results = results.filter(item => item.location === location);
+    }
+
+    if (status && status !== 'all') {
+      results = results.filter(item => item.status && item.status.toLowerCase() === status.toLowerCase());
+    }
+
+    if (urgency && urgency !== 'all') {
+      results = results.filter(item => item.urgency === urgency);
+    }
+
+    if (search && search.trim() !== '') {
+      const q = search.trim().toLowerCase();
+      results = results.filter(item => 
+        (item.title && item.title.toLowerCase().includes(q)) ||
+        (item.description && item.description.toLowerCase().includes(q)) ||
+        (item.location && item.location.toLowerCase().includes(q)) ||
+        (item.category && item.category.toLowerCase().includes(q)) ||
+        (item.refCode && item.refCode.toLowerCase().includes(q))
+      );
+    }
+
+    // Sort newest first
+    results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({
+      total: results.length,
+      items: results
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch items', details: err.message });
   }
-
-  if (category && category !== 'all') {
-    results = results.filter(item => item.category === category);
-  }
-
-  if (location && location !== 'all') {
-    results = results.filter(item => item.location === location);
-  }
-
-  if (status && status !== 'all') {
-    results = results.filter(item => item.status.toLowerCase() === status.toLowerCase());
-  }
-
-  if (urgency && urgency !== 'all') {
-    results = results.filter(item => item.urgency === urgency);
-  }
-
-  if (search && search.trim() !== '') {
-    const q = search.trim().toLowerCase();
-    results = results.filter(item => 
-      item.title.toLowerCase().includes(q) ||
-      item.description.toLowerCase().includes(q) ||
-      item.location.toLowerCase().includes(q) ||
-      item.category.toLowerCase().includes(q) ||
-      item.refCode.toLowerCase().includes(q)
-    );
-  }
-
-  // Sort newest first
-  results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  res.json({
-    total: results.length,
-    items: results
-  });
 });
 
 // Get Single Item
-app.get('/api/items/:id', (req, res) => {
-  const item = items.find(i => i.id === req.params.id);
-  if (!item) {
-    return res.status(400).json({ error: 'Item not found' });
-  }
+app.get('/api/items/:id', async (req, res) => {
+  try {
+    const item = await itemStore.getById(req.params.id);
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
 
-  const itemClaims = claims.filter(c => c.itemId === item.id);
-  res.json({ item, claims: itemClaims });
+    const allClaims = claimStore.getAll();
+    const itemClaims = allClaims.filter(c => c.itemId === item.id);
+    res.json({ item, claims: itemClaims });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error retrieving item', details: err.message });
+  }
 });
 
-// Report Lost or Found Item
-app.post('/api/items', (req, res) => {
-  const {
-    type,
-    title,
-    category,
-    location,
-    date,
-    time,
-    description,
-    reporterName,
-    reporterEmail,
-    reporterRole,
-    verificationQuestion,
-    privateAnswerHint,
-    imageData,
-    hasRedactedImage,
-    imagePlaceholder,
-    urgency
-  } = req.body;
+// Report Lost or Found Item (Strict Spam Prevention + Mongoose Persistence)
+app.post('/api/items', async (req, res) => {
+  try {
+    const {
+      type,
+      title,
+      category,
+      location,
+      date,
+      time,
+      description,
+      reporterName,
+      reporterEmail,
+      reporterRegId,
+      reporterRole,
+      verificationQuestion,
+      privateAnswerHint,
+      imageData,
+      hasRedactedImage,
+      imagePlaceholder,
+      urgency,
+      genuineAcknowledgement
+    } = req.body;
 
-  if (!title || !category || !location || !date || !description) {
-    return res.status(400).json({ error: 'Please provide all mandatory fields.' });
-  }
-
-  if (!AIT_LOCATIONS.includes(location)) {
-    return res.status(400).json({ error: `Invalid location. Must be an official AIT Pune landmark.` });
-  }
-
-  if (!CATEGORIES.includes(category)) {
-    return res.status(400).json({ error: `Invalid category.` });
-  }
-
-  const newItem = {
-    id: `item-${Date.now()}`,
-    refCode: generateRefCode(type || 'found'),
-    type: type || 'found',
-    title: title.trim(),
-    category,
-    location,
-    date,
-    time: time || '12:00',
-    description: description.trim(),
-    status: 'Active',
-    reporterName: reporterName || 'AIT Member',
-    reporterEmail: reporterEmail || 'anonymous@aitpune.edu.in',
-    reporterRole: reporterRole || 'Student',
-    verificationQuestion: verificationQuestion ? verificationQuestion.trim() : 'Please specify identifiable private marks or contents.',
-    privateAnswerHint: privateAnswerHint ? privateAnswerHint.trim() : '',
-    hasRedactedImage: !!hasRedactedImage,
-    imageData: imageData || null,
-    imagePlaceholder: imagePlaceholder || (category === 'ID Cards' ? 'id-card' : category === 'Electronics' ? 'calculator' : 'default'),
-    urgency: urgency || 'Medium',
-    createdAt: new Date().toISOString()
-  };
-
-  items.unshift(newItem);
-
-  // Check keyword watch triggers
-  const itemText = `${newItem.title} ${newItem.description} ${newItem.category}`.toLowerCase();
-  alerts.forEach(alert => {
-    if (alert.active && itemText.includes(alert.keyword.toLowerCase())) {
-      notifications.unshift({
-        id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        type: 'keyword_match',
-        title: `Watch Alert Match: "${alert.keyword}"`,
-        message: `A new ${newItem.type.toUpperCase()} item matching your watchword "${alert.keyword}" was logged at ${newItem.location}: ${newItem.title}.`,
-        timestamp: new Date().toISOString(),
-        read: false,
-        itemId: newItem.id,
-        refCode: newItem.refCode,
-        targetEmail: alert.email
+    // 1. Strict Account Verification
+    if (!reporterEmail || !reporterEmail.trim()) {
+      return res.status(403).json({ 
+        error: 'Authentication Required: You must be logged in with your official @aitpune.edu.in account to report items.' 
       });
     }
-  });
 
-  // System notification for new report
-  notifications.unshift({
-    id: `notif-${Date.now()}`,
-    type: 'new_item',
-    title: `New ${newItem.type === 'found' ? 'Found Recovery' : 'Lost Report'} Logged`,
-    message: `[${newItem.refCode}] ${newItem.title} registered at ${newItem.location}.`,
-    timestamp: new Date().toISOString(),
-    read: false,
-    itemId: newItem.id,
-    refCode: newItem.refCode
-  });
+    const cleanReporterEmail = reporterEmail.trim().toLowerCase();
+    if (!cleanReporterEmail.endsWith('@aitpune.edu.in')) {
+      return res.status(403).json({ 
+        error: 'Access Denied: Only verified @aitpune.edu.in accounts are permitted to submit campus reports.' 
+      });
+    }
 
-  res.status(201).json({
-    message: 'Item registered and cataloged successfully.',
-    item: newItem
-  });
+    if (!reporterRegId || !reporterRegId.trim()) {
+      return res.status(400).json({ 
+        error: 'Registration Number / Student Roll / Employee ID is strictly required to bind accountability.' 
+      });
+    }
+
+    if (!reporterName || !reporterName.trim()) {
+      return res.status(400).json({ 
+        error: 'Reporter full name is required.' 
+      });
+    }
+
+    // 2. Mandatory Verification Fields
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Item title is required.' });
+    }
+
+    if (!category || !CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: 'Please select a valid campus category from the list.' });
+    }
+
+    // Fixed landmark check (no generic / custom text allowed)
+    if (!location || !AIT_LOCATIONS.includes(location)) {
+      return res.status(400).json({ 
+        error: `Invalid landmark. Location must be chosen from the official 13 AIT campus landmarks list.` 
+      });
+    }
+
+    if (!date) {
+      return res.status(400).json({ error: 'Incident date is required.' });
+    }
+
+    // High-detail description (minimum 25 characters)
+    if (!description || description.trim().length < 25) {
+      return res.status(400).json({ 
+        error: `High-detail description is required: Minimum 25 characters needed (current length: ${description ? description.trim().length : 0}). Provide precise context such as desk, bench, color, or distinguishing markings.` 
+      });
+    }
+
+    // Real image upload compulsory for "Found" items
+    const itemType = (type || 'found').toLowerCase();
+    if (itemType === 'found') {
+      if (!imageData || typeof imageData !== 'string' || imageData.length < 50) {
+        return res.status(400).json({ 
+          error: 'Real image upload is compulsory for Found items to verify genuine custody and prevent fake claims.' 
+        });
+      }
+    }
+
+    // Contact disclosure & genuine acknowledgement checkbox
+    if (!genuineAcknowledgement) {
+      return res.status(400).json({ 
+        error: 'You must check the confirmation checkbox: "I confirm this information is genuine and understand that false reporting violates AIT campus policy."' 
+      });
+    }
+
+    // 3. Rate Limiting & Cooldown (Max 3 reports per user per hour)
+    const rateLimitCheck = checkReportRateLimit(cleanReporterEmail);
+    if (!rateLimitCheck.allowed) {
+      return res.status(429).json({ 
+        error: `Rate limit reached: Maximum 3 reports per user within 1 hour allowed to prevent spam. Please wait ${rateLimitCheck.minutesLeft} minutes before submitting another report.` 
+      });
+    }
+
+    // Duplicate submission prevention (exact same title and description within 24h)
+    const existingItems = await itemStore.getAll({ includeSpamHidden: true });
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const isDuplicate = existingItems.some(i => {
+      const isRecent = new Date(i.createdAt).getTime() > oneDayAgo;
+      const sameTitle = i.title.trim().toLowerCase() === title.trim().toLowerCase();
+      const sameDesc = i.description.trim().toLowerCase() === description.trim().toLowerCase();
+      return isRecent && sameTitle && sameDesc;
+    });
+
+    if (isDuplicate) {
+      return res.status(409).json({ 
+        error: 'Duplicate submission detected: An identical item report with this exact title and description has already been logged in the past 24 hours.' 
+      });
+    }
+
+    // Construct persisted item
+    const newItem = {
+      id: `item-${Date.now()}`,
+      refCode: generateRefCode(itemType),
+      type: itemType,
+      title: title.trim(),
+      category,
+      location,
+      date,
+      time: time || '12:00',
+      description: description.trim(),
+      status: 'Active',
+      reporterName: reporterName.trim(),
+      reporterEmail: cleanReporterEmail,
+      reporterRegId: reporterRegId.trim(),
+      reporterRole: normalizeRole(reporterRole),
+      verificationQuestion: verificationQuestion ? verificationQuestion.trim() : 'Please specify identifiable private marks or contents.',
+      privateAnswerHint: privateAnswerHint ? privateAnswerHint.trim() : '',
+      hasRedactedImage: !!hasRedactedImage,
+      imageData: imageData || null,
+      imagePlaceholder: imagePlaceholder || (category === 'ID Cards' ? 'id-card' : category === 'Electronics' ? 'calculator' : 'default'),
+      urgency: urgency || 'Medium',
+      genuineAcknowledgement: true,
+      flagsCount: 0,
+      flaggedBy: [],
+      isSpamHidden: false,
+      claimedBy: null,
+      handoffPass: null,
+      handoffInstructions: null,
+      createdAt: new Date().toISOString()
+    };
+
+    // Actively save to MongoDB / persistent database
+    const savedItem = await itemStore.create(newItem);
+
+    // Trigger keyword watch alerts
+    const alerts = alertStore.getAll();
+    const itemText = `${savedItem.title} ${savedItem.description} ${savedItem.category}`.toLowerCase();
+    alerts.forEach(alert => {
+      if (alert.active && itemText.includes(alert.keyword.toLowerCase())) {
+        notificationStore.create({
+          id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          type: 'keyword_match',
+          title: `Watch Alert Match: "${alert.keyword}"`,
+          message: `A new ${savedItem.type.toUpperCase()} item matching your watchword "${alert.keyword}" was logged at ${savedItem.location}: ${savedItem.title}.`,
+          timestamp: new Date().toISOString(),
+          read: false,
+          itemId: savedItem.id,
+          refCode: savedItem.refCode,
+          targetEmail: alert.email
+        });
+      }
+    });
+
+    // System notification
+    notificationStore.create({
+      id: `notif-${Date.now()}`,
+      type: 'new_item',
+      title: `New ${savedItem.type === 'found' ? 'Found Recovery' : 'Lost Report'} Logged`,
+      message: `[${savedItem.refCode}] ${savedItem.title} registered at ${savedItem.location} by ${savedItem.reporterName} (${savedItem.reporterRegId}).`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      itemId: savedItem.id,
+      refCode: savedItem.refCode
+    });
+
+    res.status(201).json({
+      message: 'Item registered and persisted to campus database successfully.',
+      item: savedItem
+    });
+  } catch (err) {
+    console.error('[API ERROR] Failed to save item:', err);
+    res.status(400).json({ error: err.message || 'Failed to submit report' });
+  }
 });
 
-// Submit a Claim for an Item
-app.post('/api/claims', (req, res) => {
-  const {
-    itemId,
-    claimantName,
-    claimantEmail,
-    claimantRoll,
-    claimantPhone,
-    answers,
-    additionalProof
-  } = req.body;
+// Flag Item as Spam / Inappropriate
+app.post('/api/items/:id/flag', async (req, res) => {
+  try {
+    const { userEmail, reason } = req.body;
+    const item = await itemStore.getById(req.params.id);
 
-  if (!itemId || !claimantName || !claimantEmail || !answers) {
-    return res.status(400).json({ error: 'Item ID, claimant details, and verification answers are required.' });
+    if (!item) {
+      return res.status(404).json({ error: 'Target item not found.' });
+    }
+
+    if (!userEmail || !userEmail.toLowerCase().endsWith('@aitpune.edu.in')) {
+      return res.status(403).json({ 
+        error: 'Only verified @aitpune.edu.in campus members can flag items for moderation.' 
+      });
+    }
+
+    const cleanUserEmail = userEmail.trim().toLowerCase();
+    const flaggedByList = Array.isArray(item.flaggedBy) ? [...item.flaggedBy] : [];
+
+    if (flaggedByList.includes(cleanUserEmail)) {
+      return res.status(400).json({ 
+        error: 'You have already flagged this post. The Security Desk is reviewing reports.' 
+      });
+    }
+
+    flaggedByList.push(cleanUserEmail);
+    const newFlagsCount = flaggedByList.length;
+
+    let isSpamHidden = item.isSpamHidden || false;
+    let newStatus = item.status;
+
+    // Automatic moderation trigger: 3 flags = auto-quarantine
+    if (newFlagsCount >= 3) {
+      isSpamHidden = true;
+      newStatus = 'Under Review';
+
+      notificationStore.create({
+        id: `notif-spam-alert-${Date.now()}`,
+        type: 'spam_quarantine',
+        title: `🚨 [SECURITY QUARANTINE] Item ${item.refCode}`,
+        message: `Item "${item.title}" reported by ${item.reporterName} reached 3 spam flags and has been automatically quarantined from the public feed pending Security Desk review.`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        itemId: item.id,
+        refCode: item.refCode
+      });
+    }
+
+    const updatedItem = await itemStore.update(item.id, {
+      flagsCount: newFlagsCount,
+      flaggedBy: flaggedByList,
+      isSpamHidden,
+      status: newStatus
+    });
+
+    res.json({
+      message: newFlagsCount >= 3 
+        ? 'Item flagged. Threshold reached (3 flags): Item has been quarantined from the public feed for Security Desk review.' 
+        : `Thank you for your report. Item has received ${newFlagsCount} flag(s).`,
+      flagsCount: newFlagsCount,
+      isSpamHidden,
+      item: updatedItem
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to flag item', details: err.message });
   }
-
-  const item = items.find(i => i.id === itemId);
-  if (!item) {
-    return res.status(404).json({ error: 'Target item not found.' });
-  }
-
-  const newClaim = {
-    id: `claim-${Date.now()}`,
-    itemId: item.id,
-    itemRefCode: item.refCode,
-    itemTitle: item.title,
-    claimantName: claimantName.trim(),
-    claimantEmail: claimantEmail.trim(),
-    claimantRoll: claimantRoll ? claimantRoll.trim() : 'N/A',
-    claimantPhone: claimantPhone ? claimantPhone.trim() : 'N/A',
-    answers: answers.trim(),
-    additionalProof: additionalProof ? additionalProof.trim() : '',
-    status: 'Pending',
-    submittedAt: new Date().toISOString()
-  };
-
-  claims.unshift(newClaim);
-
-  // Update item status to Under Review
-  if (item.status === 'Active') {
-    item.status = 'Under Review';
-  }
-
-  // Push in-app alert
-  notifications.unshift({
-    id: `notif-claim-${Date.now()}`,
-    type: 'claim_submitted',
-    title: `Claim Filed for ${item.refCode}`,
-    message: `${claimantName} submitted a verification claim for "${item.title}". Awaiting Finder / Security Desk review.`,
-    timestamp: new Date().toISOString(),
-    read: false,
-    itemId: item.id,
-    claimId: newClaim.id,
-    refCode: item.refCode
-  });
-
-  res.status(201).json({
-    message: 'Claim questionnaire submitted. Awaiting verification.',
-    claim: newClaim
-  });
 });
 
-// Get all claims (Admin / Security Desk & Finder review)
+// Admin / Security Desk Moderation (Approve/Unhide or Remove)
+app.patch('/api/items/:id/moderate', async (req, res) => {
+  try {
+    const { action, notes } = req.body;
+    const item = await itemStore.getById(req.params.id);
+
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found.' });
+    }
+
+    if (!['approve', 'remove', 'unhide'].includes(action)) {
+      return res.status(400).json({ error: 'Action must be "approve", "unhide", or "remove".' });
+    }
+
+    let updateData = {};
+
+    if (action === 'approve' || action === 'unhide') {
+      updateData = {
+        isSpamHidden: false,
+        status: 'Active',
+        flagsCount: 0,
+        flaggedBy: []
+      };
+
+      notificationStore.create({
+        id: `notif-mod-approve-${Date.now()}`,
+        type: 'system',
+        title: `Item Restored: ${item.refCode}`,
+        message: `Item "${item.title}" was reviewed and verified by Security Desk. Restored to public feed.`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        itemId: item.id,
+        refCode: item.refCode
+      });
+    } else if (action === 'remove') {
+      updateData = {
+        isSpamHidden: true,
+        status: 'Removed'
+      };
+
+      notificationStore.create({
+        id: `notif-mod-remove-${Date.now()}`,
+        type: 'system',
+        title: `Item Removed: ${item.refCode}`,
+        message: `Item "${item.title}" was permanently removed by Security Desk following spam confirmation.`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        itemId: item.id,
+        refCode: item.refCode
+      });
+    }
+
+    const updated = await itemStore.update(item.id, updateData);
+
+    res.json({
+      message: action === 'remove' ? 'Item marked as removed and hidden.' : 'Item unhidden and restored to public feed.',
+      item: updated
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to moderate item', details: err.message });
+  }
+});
+
+// ---------------- CLAIMS ENDPOINTS ----------------
+
+// Submit Claim
+app.post('/api/claims', async (req, res) => {
+  try {
+    const {
+      itemId,
+      claimantName,
+      claimantEmail,
+      claimantRoll,
+      claimantPhone,
+      answers,
+      additionalProof
+    } = req.body;
+
+    if (!itemId || !claimantName || !claimantEmail || !answers) {
+      return res.status(400).json({ error: 'Item ID, claimant details, and verification answers are required.' });
+    }
+
+    if (!claimantEmail.trim().toLowerCase().endsWith('@aitpune.edu.in')) {
+      return res.status(403).json({ error: 'Only verified @aitpune.edu.in accounts can submit ownership claims.' });
+    }
+
+    const item = await itemStore.getById(itemId);
+    if (!item) {
+      return res.status(404).json({ error: 'Target item not found.' });
+    }
+
+    const newClaim = {
+      id: `claim-${Date.now()}`,
+      itemId: item.id,
+      itemRefCode: item.refCode,
+      itemTitle: item.title,
+      claimantName: claimantName.trim(),
+      claimantEmail: claimantEmail.trim(),
+      claimantRoll: claimantRoll ? claimantRoll.trim() : 'N/A',
+      claimantPhone: claimantPhone ? claimantPhone.trim() : 'N/A',
+      answers: answers.trim(),
+      additionalProof: additionalProof ? additionalProof.trim() : '',
+      status: 'Pending',
+      submittedAt: new Date().toISOString()
+    };
+
+    claimStore.create(newClaim);
+
+    // Update item status to Under Review
+    if (item.status === 'Active') {
+      await itemStore.update(item.id, { status: 'Under Review' });
+    }
+
+    notificationStore.create({
+      id: `notif-claim-${Date.now()}`,
+      type: 'claim_submitted',
+      title: `Claim Filed for ${item.refCode}`,
+      message: `${claimantName} submitted a verification claim for "${item.title}". Awaiting Security Desk review.`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      itemId: item.id,
+      claimId: newClaim.id,
+      refCode: item.refCode
+    });
+
+    res.status(201).json({
+      message: 'Claim questionnaire submitted. Awaiting verification.',
+      claim: newClaim
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to submit claim', details: err.message });
+  }
+});
+
+// Get all claims
 app.get('/api/claims', (req, res) => {
   const { itemId, status } = req.query;
-  let results = [...claims];
+  let results = claimStore.getAll();
 
   if (itemId) {
     results = results.filter(c => c.itemId === itemId);
@@ -525,79 +704,93 @@ app.get('/api/claims', (req, res) => {
 });
 
 // Review Claim: Approve or Reject
-app.patch('/api/claims/:id', (req, res) => {
-  const { status, reviewNotes, handoffLocation } = req.body;
-  const claim = claims.find(c => c.id === req.params.id);
+app.patch('/api/claims/:id', async (req, res) => {
+  try {
+    const { status, reviewNotes, handoffLocation } = req.body;
+    const claim = claimStore.getById(req.params.id);
 
-  if (!claim) {
-    return res.status(404).json({ error: 'Claim record not found.' });
-  }
-
-  if (!['Approved', 'Rejected'].includes(status)) {
-    return res.status(400).json({ error: 'Status must be Approved or Rejected.' });
-  }
-
-  claim.status = status;
-  claim.reviewedAt = new Date().toISOString();
-  claim.reviewNotes = reviewNotes || '';
-
-  const item = items.find(i => i.id === claim.itemId);
-
-  if (status === 'Approved') {
-    const gatePassCode = `GP-AIT-${Math.floor(1000 + Math.random() * 9000)}`;
-    const instructions = `Hand over at ${handoffLocation || 'Main Security Desk / Main Gate'}. Valid College ID Card required for physical handoff.`;
-    
-    claim.handoffPass = gatePassCode;
-    claim.handoffInstructions = instructions;
-
-    if (item) {
-      item.status = 'Claimed';
-      item.claimedBy = `${claim.claimantName} (${claim.claimantRoll || claim.claimantEmail})`;
-      item.handoffPass = gatePassCode;
-      item.handoffInstructions = instructions;
+    if (!claim) {
+      return res.status(404).json({ error: 'Claim record not found.' });
     }
 
-    notifications.unshift({
-      id: `notif-approved-${Date.now()}`,
-      type: 'claim_approved',
-      title: `Claim APPROVED: Gate Pass ${gatePassCode}`,
-      message: `Claim for "${claim.itemTitle}" by ${claim.claimantName} was verified and approved! Collect from Security Desk.`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      itemId: claim.itemId,
-      claimId: claim.id,
-      refCode: claim.itemRefCode
-    });
-  } else {
-    if (item) {
-      // Revert to Active if no other approved claim
-      const otherApproved = claims.some(c => c.itemId === item.id && c.status === 'Approved');
-      const otherPending = claims.some(c => c.itemId === item.id && c.status === 'Pending' && c.id !== claim.id);
-      item.status = otherApproved ? 'Claimed' : (otherPending ? 'Under Review' : 'Active');
+    if (!['Approved', 'Rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Status must be Approved or Rejected.' });
     }
 
-    notifications.unshift({
-      id: `notif-rejected-${Date.now()}`,
-      type: 'claim_rejected',
-      title: `Claim Rejected for ${claim.itemRefCode}`,
-      message: `Claim questionnaire by ${claim.claimantName} did not match identifying marks. Item remains listed.`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      itemId: claim.itemId,
-      claimId: claim.id,
-      refCode: claim.itemRefCode
-    });
-  }
+    let updatedClaim = null;
+    let updatedItem = null;
 
-  res.json({
-    message: `Claim ${status.toLowerCase()} successfully.`,
-    claim,
-    item
-  });
+    if (status === 'Approved') {
+      const gatePassCode = `GP-AIT-${Math.floor(1000 + Math.random() * 9000)}`;
+      const instructions = `Hand over at ${handoffLocation || 'Main Security Desk / Main Gate'}. Valid College ID Card required for physical handoff.`;
+      
+      updatedClaim = claimStore.update(claim.id, {
+        status: 'Approved',
+        reviewedAt: new Date().toISOString(),
+        reviewNotes: reviewNotes || '',
+        handoffPass: gatePassCode,
+        handoffInstructions: instructions
+      });
+
+      updatedItem = await itemStore.update(claim.itemId, {
+        status: 'Claimed',
+        claimedBy: `${claim.claimantName} (${claim.claimantRoll || claim.claimantEmail})`,
+        handoffPass: gatePassCode,
+        handoffInstructions: instructions
+      });
+
+      notificationStore.create({
+        id: `notif-approved-${Date.now()}`,
+        type: 'claim_approved',
+        title: `Claim APPROVED: Gate Pass ${gatePassCode}`,
+        message: `Claim for "${claim.itemTitle}" by ${claim.claimantName} was verified! Collect from Security Desk.`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        itemId: claim.itemId,
+        claimId: claim.id,
+        refCode: claim.itemRefCode
+      });
+    } else {
+      updatedClaim = claimStore.update(claim.id, {
+        status: 'Rejected',
+        reviewedAt: new Date().toISOString(),
+        reviewNotes: reviewNotes || ''
+      });
+
+      const allClaims = claimStore.getAll();
+      const otherApproved = allClaims.some(c => c.itemId === claim.itemId && c.status === 'Approved');
+      const otherPending = allClaims.some(c => c.itemId === claim.itemId && c.status === 'Pending' && c.id !== claim.id);
+      
+      updatedItem = await itemStore.update(claim.itemId, {
+        status: otherApproved ? 'Claimed' : (otherPending ? 'Under Review' : 'Active')
+      });
+
+      notificationStore.create({
+        id: `notif-rejected-${Date.now()}`,
+        type: 'claim_rejected',
+        title: `Claim Rejected for ${claim.itemRefCode}`,
+        message: `Claim questionnaire by ${claim.claimantName} did not match identifying marks. Item remains listed.`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        itemId: claim.itemId,
+        claimId: claim.id,
+        refCode: claim.itemRefCode
+      });
+    }
+
+    res.json({
+      message: `Claim ${status.toLowerCase()} successfully.`,
+      claim: updatedClaim,
+      item: updatedItem
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to review claim', details: err.message });
+  }
 });
 
-// Notifications Endpoints
+// Notifications
 app.get('/api/notifications', (req, res) => {
+  const notifications = notificationStore.getAll();
   res.json({
     total: notifications.length,
     unread: notifications.filter(n => !n.read).length,
@@ -606,13 +799,13 @@ app.get('/api/notifications', (req, res) => {
 });
 
 app.patch('/api/notifications/mark-read', (req, res) => {
-  notifications.forEach(n => { n.read = true; });
+  notificationStore.markAllRead();
   res.json({ message: 'All notifications marked as read.' });
 });
 
-// Keyword Alerts Endpoints ("Notify Me")
+// Keyword Alerts
 app.get('/api/alerts', (req, res) => {
-  res.json({ alerts });
+  res.json({ alerts: alertStore.getAll() });
 });
 
 app.post('/api/alerts', (req, res) => {
@@ -621,17 +814,15 @@ app.post('/api/alerts', (req, res) => {
     return res.status(400).json({ error: 'Keyword must be at least 2 characters long.' });
   }
 
-  const newAlert = {
+  const newAlert = alertStore.create({
     id: `alert-${Date.now()}`,
     keyword: keyword.trim(),
     email: email ? email.trim() : 'current_user@aitpune.edu.in',
     createdAt: new Date().toISOString(),
     active: true
-  };
+  });
 
-  alerts.unshift(newAlert);
-
-  notifications.unshift({
+  notificationStore.create({
     id: `notif-alert-sub-${Date.now()}`,
     type: 'alert_created',
     title: `Radar Alert Activated`,
@@ -648,48 +839,21 @@ app.post('/api/alerts', (req, res) => {
 });
 
 app.delete('/api/alerts/:id', (req, res) => {
-  alerts = alerts.filter(a => a.id !== req.params.id);
+  alertStore.delete(req.params.id);
   res.json({ message: 'Radar alert removed.' });
 });
 
-// Reset Data endpoint (Convenient for demos)
-app.post('/api/reset', (req, res) => {
-  items = JSON.parse(JSON.stringify(SEEDED_ITEMS));
-  alerts = JSON.parse(JSON.stringify(INITIAL_ALERTS));
-  claims = [
-    {
-      id: "claim-001",
-      itemId: "item-008",
-      itemRefCode: "AIT-2026-F008",
-      itemTitle: "AIT Official Squad Blazer (Navy Blue / Brass Crest)",
-      claimantName: "Devansh Singh",
-      claimantEmail: "devansh.singh_2310@aitpune.edu.in",
-      claimantRoll: "23102",
-      claimantPhone: "+91 98230 44521",
-      answers: "Tailor tag says Raymond Tailors Pune with serial 749, has extra brass button in right pocket.",
-      additionalProof: "I was wearing it for the NCC drill on Monday and left it on row F.",
-      status: "Pending",
-      submittedAt: "2026-10-14T10:30:00Z"
-    }
-  ];
-  notifications = [
-    {
-      id: "notif-001",
-      type: "system",
-      title: "Data Reset Complete",
-      message: "Seeded items and campus logs have been restored to initial state.",
-      timestamp: new Date().toISOString(),
-      read: false,
-      refCode: "AIT-SYSTEM"
-    }
-  ];
-
-  res.json({ message: 'Catalog restored to original AIT mock seed state.' });
+// Reset Data endpoint
+app.post('/api/reset', async (req, res) => {
+  try {
+    await itemStore.reset();
+    res.json({ message: 'Catalog restored to original AIT mock seed state.' });
+  } catch (err) {
+    res.status(500).json({ error: 'Reset failed' });
+  }
 });
 
-import path from 'path';
-import { fileURLToPath } from 'url';
-
+// Static Client Serving
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDist = path.join(__dirname, '../../client/dist');
@@ -700,9 +864,9 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
+// Start Server
 app.listen(PORT, () => {
   console.log(`[AIT Lost & Found Backend] Server listening on port ${PORT}`);
   console.log(`[Campus Landmarks Loaded]: ${AIT_LOCATIONS.length} official AIT zones`);
-  console.log(`[Seed Items Loaded]: ${items.length} recoveries & lost reports`);
   console.log(`[Full-Stack Portal Ready]: http://localhost:${PORT}`);
 });

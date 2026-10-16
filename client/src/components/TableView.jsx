@@ -1,11 +1,13 @@
 import React from 'react';
-import { MapPin, Eye, ArrowRight, Award } from 'lucide-react';
+import { MapPin, Eye, ArrowRight, Award, Flag } from 'lucide-react';
 
 export default function TableView({
   items = [],
   onOpenDetail,
   onOpenClaim,
-  onOpenGatePass
+  onOpenGatePass,
+  onFlagItem,
+  currentUser
 }) {
   if (items.length === 0) return null;
 
@@ -38,8 +40,9 @@ export default function TableView({
           <tbody className="divide-y divide-white/[0.06] text-gray-300">
             {items.map((item) => {
               const isFound = item.type === 'found';
-              const isClaimed = item.status.toLowerCase() === 'claimed';
-              const isUnderReview = item.status.toLowerCase() === 'under review';
+              const isClaimed = item.status?.toLowerCase() === 'claimed';
+              const isUnderReview = item.status?.toLowerCase() === 'under review';
+              const isFlaggedByMe = currentUser && Array.isArray(item.flaggedBy) && item.flaggedBy.includes(currentUser.email?.toLowerCase());
 
               return (
                 <tr 
@@ -68,6 +71,7 @@ export default function TableView({
                     </div>
                     <div className="text-[11px] text-gray-400">
                       {item.category} {item.hasRedactedImage && '• [Privacy Masked]'}
+                      {item.reporterRegId && ` • Reg: ${item.reporterRegId}`}
                     </div>
                   </td>
 
@@ -83,7 +87,12 @@ export default function TableView({
                   </td>
 
                   <td className="py-4 px-4 whitespace-nowrap">
-                    {isClaimed ? (
+                    {item.flagsCount > 0 ? (
+                      <span className="text-[10px] px-2.5 py-0.5 rounded-full font-bold bg-red-600/20 text-red-300 border border-red-500/30 flex items-center gap-1 w-fit">
+                        <Flag className="w-2.5 h-2.5" />
+                        <span>{item.flagsCount} Flag{item.flagsCount > 1 ? 's' : ''}</span>
+                      </span>
+                    ) : isClaimed ? (
                       <span className="text-[10px] px-2.5 py-0.5 rounded-full font-bold bg-amber-600/20 text-amber-300 border border-amber-500/30">
                         Claimed
                       </span>
@@ -100,6 +109,20 @@ export default function TableView({
 
                   <td className="py-4 px-4 text-right whitespace-nowrap">
                     <div className="flex items-center justify-end gap-2">
+                      {onFlagItem && (
+                        <button
+                          onClick={() => onFlagItem(item)}
+                          title="Report Spam"
+                          className={`p-1.5 rounded-lg border text-xs transition-colors ${
+                            isFlaggedByMe
+                              ? 'bg-red-600/30 border-red-500 text-red-200'
+                              : 'bg-white/5 border-white/10 text-gray-400 hover:text-red-400'
+                          }`}
+                        >
+                          <Flag className="w-3 h-3" />
+                        </button>
+                      )}
+
                       <button
                         onClick={() => onOpenDetail(item)}
                         className="px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-gray-200 transition-all"

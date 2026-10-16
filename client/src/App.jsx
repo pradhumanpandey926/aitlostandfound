@@ -19,7 +19,7 @@ import { Shield, RefreshCw, AlertCircle, ArrowRight, ShieldCheck, MapPin } from 
 
 export default function App() {
   // State: Data
-  const [items, setItems] = useState(SEEDED_ITEMS);
+  const [items, setItems] = useState([]);
   const [claims, setClaims] = useState([]);
   const [alerts, setAlerts] = useState([
     { id: 'alt-1', keyword: 'Casio', email: 'priya.sharma_2311@aitpune.edu.in' },
@@ -29,8 +29,8 @@ export default function App() {
     {
       id: 'notif-welcome',
       type: 'system',
-      title: 'CALL SHEET INITIALIZED',
-      message: 'AIT Campus Recovery Portal is fully armed with 13 official Pune landmarks.',
+      title: 'AIT RECOVERY SYSTEM ONLINE',
+      message: 'Persistent campus database connected with official landmarks & spam prevention.',
       timestamp: new Date().toISOString(),
       read: false,
       refCode: 'AIT-CALL-SHEET'
@@ -66,7 +66,7 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
 
-  // In-App Toast Alert banner (AVNIER binary black & white)
+  // In-App Toast Alert banner
   const [toastMessage, setToastMessage] = useState(null);
 
   const showToast = (msg, type = 'success') => {
@@ -76,18 +76,20 @@ export default function App() {
     }, 4500);
   };
 
-  // Fetch Items from API Backend
+  // Fetch Items from API Backend (Global Feed Fetching)
   const fetchItems = async () => {
     try {
-      const res = await fetch('/api/items');
+      const isAdmin = currentUser?.role === 'Staff / Other / Security';
+      const url = isAdmin ? '/api/items?includeSpamHidden=true' : '/api/items';
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
-        if (data.items && data.items.length > 0) {
+        if (data.items) {
           setItems(data.items);
         }
       }
     } catch (err) {
-      console.log('Using local client state (API sync available)');
+      console.log('Unable to reach backend /api/items');
     }
   };
 
@@ -100,7 +102,7 @@ export default function App() {
         setClaims(data.claims || []);
       }
     } catch (err) {
-      console.log('Using local claims state');
+      console.log('Local claims state active');
     }
   };
 
@@ -134,14 +136,24 @@ export default function App() {
     }
   };
 
+  // Real-time Data Sync: Fetch on mount + Poll every 5 seconds for cross-user live updates
   useEffect(() => {
     fetchItems();
     fetchClaims();
     fetchNotifications();
     fetchAlerts();
-  }, []);
 
-  // Handle Report Item Submission
+    // Auto-polling so all users on any browser/tab see reported items instantly
+    const pollInterval = setInterval(() => {
+      fetchItems();
+      fetchNotifications();
+      fetchClaims();
+    }, 5000);
+
+    return () => clearInterval(pollInterval);
+  }, [currentUser]);
+
+  // Handle Report Item Submission (Strict Backend Database Persistence - No Client-Only Fake Items)
   const handleReportSubmit = async (newItemData) => {
     try {
       const res = await fetch('/api/items', {
@@ -150,35 +162,88 @@ export default function App() {
         body: JSON.stringify(newItemData)
       });
 
+      const data = await res.json();
+
       if (res.ok) {
-        const data = await res.json();
-        setItems(prev => [data.item, ...prev]);
+        // Immediately prepend to local items feed and close modal
+        setItems(prev => [data.item, ...prev.filter(i => i.id !== data.item.id)]);
         setIsReportOpen(false);
-        showToast(`ITEM REGISTERED UNDER CALL SHEET REF: ${data.item.refCode}`);
+        showToast(`ITEM SAVED TO CAMPUS RECOVERY REGISTER // [${data.item.refCode}]`);
         fetchNotifications();
+        // Trigger server refetch to ensure global sync
+        fetchItems();
       } else {
-        const localItem = {
-          ...newItemData,
-          id: `item-${Date.now()}`,
-          refCode: `AIT-2026-${newItemData.type === 'lost' ? 'L' : 'F'}${Math.floor(100 + Math.random() * 900)}`,
-          status: 'Active',
-          createdAt: new Date().toISOString()
-        };
-        setItems(prev => [localItem, ...prev]);
-        setIsReportOpen(false);
-        showToast(`ITEM REGISTERED // [${localItem.refCode}]`);
+        // Direct feedback on validation or rate-limiting error
+        showToast(data.error || 'Failed to submit report. Please review form requirements.', 'warning');
       }
     } catch (err) {
-      const localItem = {
-        ...newItemData,
-        id: `item-${Date.now()}`,
-        refCode: `AIT-2026-${newItemData.type === 'lost' ? 'L' : 'F'}${Math.floor(100 + Math.random() * 900)}`,
-        status: 'Active',
-        createdAt: new Date().toISOString()
-      };
-      setItems(prev => [localItem, ...prev]);
-      setIsReportOpen(false);
-      showToast(`ITEM REGISTERED // [${localItem.refCode}]`);
+      showToast('Network error: Unable to connect to campus database.', 'warning');
+    }
+  };
+
+  // Handle Spam Flagging
+  const handleFlagItem = async (item) => {
+    if (!currentUser) {
+      showToast('Please log in with your @aitpune.edu.in account to flag spam or inappropriate content.', 'warning');
+      setIsAuthOpen(true);
+      return;
+    }
+
+    const isConfirmed = window.confirm(
+      `Flag "${item.title}" [${item.refCode}] as spam or inappropriate?\n\nIf this item receives 3 flags, it will be automatically quarantined from the public feed pending Security Desk review.`
+    );
+
+    if (!isConfirmed) return;
+
+    try {
+      const res = await fetch(`/api/items/${item.id}/flag`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userEmail: currentUser.email })
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        if (data.isSpamHidden) {
+          showToast(`🚨 QUARANTINED: Item ${item.refCode} reached 3 flags and has been hidden from public feed for review.`, 'warning');
+          // Hide from current public view
+          setItems(prev => prev.filter(i => i.id !== item.id));
+        } else {
+          showToast(`Report submitted. Flag count: ${data.flagsCount} / 3. Thank you for keeping campus safe.`, 'info');
+          // Update item flag count
+          setItems(prev => prev.map(i => i.id === item.id ? { ...i, flagsCount: data.flagsCount, flaggedBy: [...(i.flaggedBy || []), currentUser.email] } : i));
+        }
+        fetchNotifications();
+        fetchItems();
+      } else {
+        showToast(data.error || 'Failed to flag item.', 'warning');
+      }
+    } catch (err) {
+      showToast('Network error while flagging item.', 'warning');
+    }
+  };
+
+  // Handle Security Desk Moderation (Approve/Unhide or Remove)
+  const handleModerateItem = async (itemId, action) => {
+    try {
+      const res = await fetch(`/api/items/${itemId}/moderate`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        showToast(data.message, 'success');
+        fetchItems();
+        fetchNotifications();
+      } else {
+        showToast(data.error || 'Moderation action failed', 'warning');
+      }
+    } catch (err) {
+      showToast('Network error during moderation', 'warning');
     }
   };
 
@@ -191,36 +256,19 @@ export default function App() {
         body: JSON.stringify(claimData)
       });
 
+      const data = await res.json();
+
       if (res.ok) {
-        const data = await res.json();
         setClaims(prev => [data.claim, ...prev]);
         setItems(prev => prev.map(i => i.id === claimData.itemId ? { ...i, status: 'Under Review' } : i));
         setSelectedItemForClaim(null);
         showToast('CLAIM TRANSMITTED // AWAITING AUDIT', 'info');
         fetchNotifications();
       } else {
-        const localClaim = {
-          ...claimData,
-          id: `claim-${Date.now()}`,
-          status: 'Pending',
-          submittedAt: new Date().toISOString()
-        };
-        setClaims(prev => [localClaim, ...prev]);
-        setItems(prev => prev.map(i => i.id === claimData.itemId ? { ...i, status: 'Under Review' } : i));
-        setSelectedItemForClaim(null);
-        showToast('CLAIM TRANSMITTED // AWAITING AUDIT', 'info');
+        showToast(data.error || 'Failed to submit claim.', 'warning');
       }
     } catch (err) {
-      const localClaim = {
-        ...claimData,
-        id: `claim-${Date.now()}`,
-        status: 'Pending',
-        submittedAt: new Date().toISOString()
-      };
-      setClaims(prev => [localClaim, ...prev]);
-      setItems(prev => prev.map(i => i.id === claimData.itemId ? { ...i, status: 'Under Review' } : i));
-      setSelectedItemForClaim(null);
-      showToast('CLAIM TRANSMITTED // AWAITING AUDIT', 'info');
+      showToast('Network error submitting claim.', 'warning');
     }
   };
 
@@ -343,27 +391,31 @@ export default function App() {
       await fetchItems();
       await fetchClaims();
       await fetchNotifications();
-      showToast('CALL SHEET RESTORED TO DEFAULT SEED INVENTORY.');
+      showToast('CAMPUS REGISTER RESTORED TO DEFAULT SEED INVENTORY.');
     } catch (err) {
-      setItems(SEEDED_ITEMS);
-      showToast('INVENTORY RESTORED TO DEFAULT STATE.');
+      showToast('INVENTORY RESTORED.');
     }
   };
 
   // Compute Filtered Items
   const filteredItems = items.filter(item => {
+    // If not admin, hide spam items
+    if (item.isSpamHidden && currentUser?.role !== 'Staff / Other / Security') {
+      return false;
+    }
+
     if (searchQuery.trim() !== '') {
       const q = searchQuery.toLowerCase().trim();
       const match = 
-        item.title.toLowerCase().includes(q) ||
-        item.description.toLowerCase().includes(q) ||
-        item.location.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
-        item.refCode.toLowerCase().includes(q);
+        (item.title && item.title.toLowerCase().includes(q)) ||
+        (item.description && item.description.toLowerCase().includes(q)) ||
+        (item.location && item.location.toLowerCase().includes(q)) ||
+        (item.category && item.category.toLowerCase().includes(q)) ||
+        (item.refCode && item.refCode.toLowerCase().includes(q));
       if (!match) return false;
     }
 
-    if (typeFilter !== 'all' && item.type.toLowerCase() !== typeFilter.toLowerCase()) {
+    if (typeFilter !== 'all' && item.type && item.type.toLowerCase() !== typeFilter.toLowerCase()) {
       return false;
     }
 
@@ -375,7 +427,7 @@ export default function App() {
       return false;
     }
 
-    if (statusFilter !== 'all' && item.status.toLowerCase() !== statusFilter.toLowerCase()) {
+    if (statusFilter !== 'all' && item.status && item.status.toLowerCase() !== statusFilter.toLowerCase()) {
       return false;
     }
 
@@ -386,8 +438,8 @@ export default function App() {
     total: items.length,
     found: items.filter(i => i.type === 'found').length,
     lost: items.filter(i => i.type === 'lost').length,
-    claimed: items.filter(i => i.status.toLowerCase() === 'claimed').length,
-    underReview: items.filter(i => i.status.toLowerCase() === 'under review').length
+    claimed: items.filter(i => i.status?.toLowerCase() === 'claimed').length,
+    underReview: items.filter(i => i.status?.toLowerCase() === 'under review').length
   };
 
   const unreadCount = notifications.filter(n => !n.read).length;
@@ -395,7 +447,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-[#08080a] text-white selection:bg-[#E50914] selection:text-white relative overflow-x-hidden">
       
-      {/* Ambient Radial Crimson Glows (Lazarev Agency / Netflix Theme) */}
+      {/* Ambient Radial Crimson Glows */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
         <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[900px] h-[550px] bg-[radial-gradient(ellipse_at_center,rgba(229,9,20,0.22)_0%,rgba(0,0,0,0)_70%)] blur-2xl pointer-events-none" />
         <div className="absolute top-[650px] -left-40 w-[600px] h-[600px] bg-[radial-gradient(circle,rgba(229,9,20,0.06)_0%,rgba(0,0,0,0)_70%)] blur-3xl pointer-events-none" />
@@ -403,12 +455,12 @@ export default function App() {
 
       {/* Top Banner Toast (Cinematic Dark Glass with Crimson Accent) */}
       {toastMessage && (
-        <div className="fixed top-20 right-4 z-50 bg-[#12141c]/90 backdrop-blur-xl text-white px-5 py-3.5 border border-red-500/40 rounded-2xl flex items-center gap-3 text-xs shadow-2xl shadow-red-950/40 animate-in fade-in slide-in-from-top-3">
-          <span className="w-2 h-2 rounded-full bg-[#E50914] animate-pulse"></span>
-          <span className="font-medium">{toastMessage.msg}</span>
+        <div className="fixed top-20 right-4 z-50 bg-[#12141c]/95 backdrop-blur-xl text-white px-5 py-3.5 border border-red-500/40 rounded-2xl flex items-center gap-3 text-xs shadow-2xl shadow-red-950/40 animate-in fade-in slide-in-from-top-3 max-w-md">
+          <span className="w-2.5 h-2.5 rounded-full bg-[#E50914] animate-pulse shrink-0"></span>
+          <span className="font-medium leading-relaxed">{toastMessage.msg}</span>
           <button 
             onClick={() => setToastMessage(null)}
-            className="text-white/40 hover:text-white ml-2 transition-colors"
+            className="text-white/40 hover:text-white ml-auto transition-colors shrink-0"
           >
             ✕
           </button>
@@ -431,21 +483,22 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-8 py-6 sm:py-10 relative z-10 space-y-10">
         
-        {/* 3D Perspective Coverflow Carousel (Matching Pinterest Reference https://pin.it/2StigAvv5) */}
+        {/* 3D Perspective Coverflow Carousel */}
         <FeaturedCarousel
-          items={items}
+          items={items.filter(i => !i.isSpamHidden)}
           onOpenDetail={(i) => setSelectedItemForDetail(i)}
           onOpenClaim={(i) => handleOpenClaim(i)}
+          onOpenGatePass={(i) => setSelectedItemForGatePass(i)}
         />
 
-        {/* Hero Split & Commerce Utility Strip */}
+        {/* Hero Split & Statistics Strip */}
         <StatsBanner
           stats={stats}
           onOpenReport={(type) => handleOpenReport(type)}
           onQuickFilterType={(type) => setTypeFilter(type)}
         />
 
-        {/* Category Index Row (13 Monitored AIT Campus Zones) */}
+        {/* 13 Monitored AIT Campus Zones */}
         <HotspotsFilter
           selectedLocation={selectedLocation}
           onSelectLocation={(loc) => setSelectedLocation(loc)}
@@ -513,6 +566,8 @@ export default function App() {
                 onOpenDetail={(i) => setSelectedItemForDetail(i)}
                 onOpenClaim={(i) => handleOpenClaim(i)}
                 onOpenGatePass={(i) => setSelectedItemForGatePass(i)}
+                onFlagItem={handleFlagItem}
+                currentUser={currentUser}
               />
             ))}
           </div>
@@ -522,6 +577,8 @@ export default function App() {
             onOpenDetail={(i) => setSelectedItemForDetail(i)}
             onOpenClaim={(i) => handleOpenClaim(i)}
             onOpenGatePass={(i) => setSelectedItemForGatePass(i)}
+            onFlagItem={handleFlagItem}
+            currentUser={currentUser}
           />
         )}
 
@@ -531,7 +588,7 @@ export default function App() {
             <span className={`w-2 h-2 rounded-full ${currentUser ? 'bg-emerald-500 shadow-sm shadow-emerald-500' : 'bg-amber-400'}`}></span>
             {currentUser ? (
               <span className="text-white/70">
-                Active Session: <strong className="text-white font-semibold">{currentUser.name}</strong> [{currentUser.role}] • <span className="text-white/40 font-mono">ID: {currentUser.regId || currentUser.roll || 'Verified'}</span>
+                Active Session: <strong className="text-white font-semibold">{currentUser.name}</strong> [{currentUser.role}] • <span className="text-white/40 font-mono">ID: {currentUser.regId || 'Verified'}</span>
               </span>
             ) : (
               <span className="text-white/60">
@@ -562,7 +619,7 @@ export default function App() {
               title="Reset inventory to default seed state"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Reset Data</span>
+              <span>Reset Catalog</span>
             </button>
           </div>
         </div>
@@ -572,31 +629,31 @@ export default function App() {
       {/* Cinematic Dark Footer */}
       <footer className="bg-[#050608] text-white border-t border-white/10 text-xs mt-12 relative z-10">
         
-        {/* Service Benefit Row (Four Compact Cards) */}
+        {/* Service Benefit Row */}
         <div className="max-w-[1440px] mx-auto px-4 sm:px-8 py-10 border-b border-white/10">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             
             <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-2">
               <span className="text-[10px] text-red-400 font-bold tracking-wider uppercase block">
-                [01] Anti-Fraud Verification
+                [01] 13 AIT Zones
               </span>
               <p className="text-xs text-white/70 leading-relaxed">
-                Proprietary questionnaire cross-referenced with finder's confidential inventory records.
+                Audited location registry covering Raman Theater, Library, Mess, Labs, and Grounds.
               </p>
             </div>
 
             <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-2">
               <span className="text-[10px] text-red-400 font-bold tracking-wider uppercase block">
-                [02] 13 Campus Zones
+                [02] Anti-Fraud Verification
               </span>
               <p className="text-xs text-white/70 leading-relaxed">
-                Instant logging across Library, Mess, Workshop, Raman Theater, BCJ Hall, and Grounds.
+                Anti-theft identifying questions &amp; privacy redaction masks to protect student credentials.
               </p>
             </div>
 
             <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-2">
               <span className="text-[10px] text-red-400 font-bold tracking-wider uppercase block">
-                [03] Gate Pass Clearance
+                [03] Physical Gate Pass
               </span>
               <p className="text-xs text-white/70 leading-relaxed">
                 Physical property releases require digital Gate Pass code GP-AIT-xxxx with college ID.
@@ -605,10 +662,10 @@ export default function App() {
 
             <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-2">
               <span className="text-[10px] text-red-400 font-bold tracking-wider uppercase block">
-                [04] Keyword Radar
+                [04] Anti-Spam Moderation
               </span>
               <p className="text-xs text-white/70 leading-relaxed">
-                Arm active watchwords to receive real-time dispatch alerts when missing gear is logged.
+                Account identity binding, rate limiting, and 3-flag community quarantine protection.
               </p>
             </div>
 
@@ -652,6 +709,7 @@ export default function App() {
         items={items}
         onReviewClaim={handleReviewClaim}
         onOpenGatePass={(item) => setSelectedItemForGatePass(item)}
+        onModerateItem={handleModerateItem}
       />
 
       <GatePassModal
@@ -692,6 +750,7 @@ export default function App() {
         item={selectedItemForDetail}
         onOpenClaim={(item) => handleOpenClaim(item)}
         onOpenGatePass={(item) => setSelectedItemForGatePass(item)}
+        onFlagItem={handleFlagItem}
         currentUser={currentUser}
       />
 

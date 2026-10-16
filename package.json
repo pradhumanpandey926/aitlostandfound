@@ -1,0 +1,11 @@
+{
+  "name": "ait-lost-and-found",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server/src/index.js",
+    "server": "node server/src/index.js",
+    "client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build"
+  }
+}

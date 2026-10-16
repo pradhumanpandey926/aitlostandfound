@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-cinema: #08080A;
+    --card-surface: #141419;
+    --card-elevated: #1A1A22;
+    --accent-red: #E50914;
+    --accent-red-hover: #F40612;
+    --accent-ruby: #B81D24;
+    --text-primary: #F3F4F6;
+    --text-muted: #9CA3AF;
+    --border-glass: rgba(255, 255, 255, 0.10);
+  }
+
+  body {
+    background-color: #08080A;
+    color: #F3F4F6;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+}
+
+/* Cinematic Crimson Radial Backlight Glow (from the reference) */
+.cinema-ambient-glow {
+  background: radial-gradient(
+    circle at 50% 35%,
+    rgba(229, 9, 20, 0.25) 0%,
+    rgba(140, 10, 20, 0.12) 40%,
+    rgba(8, 8, 10, 0.0) 70%
+  );
+}
+
+/* Glassmorphism Panels */
+.glass-panel {
+  background-color: rgba(20, 20, 26, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-dropdown {
+  background-color: rgba(24, 24, 32, 0.95);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* Rounded Cards with Cinematic Gradient Scrim */
+.cinema-card {
+  background-color: #141419;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.25rem;
+  overflow: hidden;
+  position: relative;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease;
+}
+
+.cinema-card:hover {
+  transform: translateY(-5px);
+  border-color: rgba(229, 9, 20, 0.4);
+  box-shadow: 0 16px 36px -10px rgba(229, 9, 20, 0.25), 0 0 0 1px rgba(229, 9, 20, 0.3);
+}
+
+/* Crimson CTA Button */
+.btn-crimson {
+  background: linear-gradient(135deg, #E50914 0%, #B81D24 100%);
+  color: #ffffff;
+  border-radius: 0.75rem;
+  font-weight: 600;
+  box-shadow: 0 4px 18px rgba(229, 9, 20, 0.35);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-crimson:hover {
+  transform: translateY(-1.5px);
+  box-shadow: 0 8px 24px rgba(229, 9, 20, 0.5);
+  background: linear-gradient(135deg, #F40612 0%, #C41F26 100%);
+}
+
+.btn-crimson:active {
+  transform: translateY(1px);
+}
+
+.btn-glass {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  border-radius: 0.75rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-glass:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+
+/* Circular Platform Badge (HBO blue / Netflix red style from reference) */
+.platform-badge {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.75rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.platform-badge-red {
+  background: linear-gradient(135deg, #E50914 0%, #8B0000 100%);
+  color: #ffffff;
+}
+
+.platform-badge-blue {
+  background: linear-gradient(135deg, #1D4ED8 0%, #1E3A8A 100%);
+  color: #ffffff;
+}
+
+.platform-badge-emerald {
+  background: linear-gradient(135deg, #059669 0%, #064E3B 100%);
+  color: #ffffff;
+}
+
+.platform-badge-amber {
+  background: linear-gradient(135deg, #D97706 0%, #78350F 100%);
+  color: #ffffff;
+}
+
+/* 3D Perspective Carousel Container */
+.carousel-3d-stage {
+  perspective: 1200px;
+  transform-style: preserve-3d;
+}
+
+/* Sleek Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #08080A;
+}
+::-webkit-scrollbar-thumb {
+  background: #26262E;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #E50914;
+}
